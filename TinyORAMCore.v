@@ -18,7 +18,7 @@
 module TinyORAMCore(
   	Clock, Reset,
 
-	Cmd, PAddr,
+	Cmd, PAddr, WMask,
 	CmdValid, CmdReady,
 
 	DataIn,
@@ -29,7 +29,12 @@ module TinyORAMCore(
 
 	DRAMAddress, DRAMCommand, DRAMCommandValid, DRAMCommandReady,
 	DRAMReadData, DRAMReadDataValid,
-	DRAMWriteData, DRAMWriteMask, DRAMWriteDataValid, DRAMWriteDataReady
+	DRAMWriteData, DRAMWriteDataValid, DRAMWriteDataReady,
+	
+	Mode_DummyGen,
+	
+	JTAG_UORAM, JTAG_PMMAC, JTAG_Frontend,
+	JTAG_AES, JTAG_StashCore, JTAG_Stash, JTAG_StashTop, JTAG_BackendCore, JTAG_Backend	
 	);
 
 	//--------------------------------------------------------------------------
@@ -39,57 +44,29 @@ module TinyORAMCore(
 	// Debugging
 
 	/*
-		SlowAESClock:			AES should use the same clock as the rest of the
-								design
-		DebugDRAMReadTiming: 	Don't send PathBuffer data to AES until the
-								PathBuffer has received an entire path.  This
-								eliminates differences in MIG vs. simulation
-								read timing.
+		SlowAESClock:			AES should use the same clock as the rest of the design
+		DebugDRAMReadTiming: 	Don't send PathBuffer data to AES until the PathBuffer has received an entire path.  
+								This eliminates differences in MIG vs. simulation read timing.
 	*/
 	parameter				SlowAESClock =			1; // NOTE: set to 0 for performance run
-	parameter				DebugDRAMReadTiming =	0; // NOTE: set to 0 for performance run
-
-	// Frontend-backend
-
-	parameter				EnablePLB = 			1,
-							EnableREW =				0,
-							EnableAES =				0,//`ifdef ASIC 0 `else 0 `endif,
-   							EnableIV =				0;//`ifdef ASIC 1 `else 1 `endif;
-
-	// ORAM
-
-	parameter				ORAMB =					512,
-							ORAMU =					32,
-							ORAML =					20,
-							ORAMZ =					`ifdef ORAMZ `ORAMZ `else (EnableREW) ? 5 : 3 `endif, // TODO change REW Z to 4
-							ORAMC =					10,
-							ORAME =					5;
-
-	parameter				FEDWidth =				64,
-							BEDWidth =				64;
-
-    parameter				NumValidBlock = 		1 << 13,//1 << ORAML,
-							Recursion = 			2,
-							PLBCapacity = 			8192 << 3, // 8KB PLB
-							PRFPosMap =         	EnableIV;
-							
-	// Hardware
-
-	parameter				Overclock =				1;
+	parameter				DebugDRAMReadTiming =	0; // NOTE: set to 0 for performance run [NOTE: we un-implemented this.  look in SVN for old code ...]
 
 	//--------------------------------------------------------------------------
 	//	Constants
 	//--------------------------------------------------------------------------
-
+	
+	`include "PathORAM.vh" 
+	`include "UORAM.vh" 
+	
+	`include "DMLocal.vh"
 	`include "DDR3SDRAMLocal.vh"
+	`include "BucketLocal.vh"
 	`include "CommandsLocal.vh"
+	`include "JTAG.vh"
 
-	localparam				ORAMUValid =			`log2(NumValidBlock) + 1;
-
-	// No scheme currently needs DWB
-	// [Note] there is some logic in BackendControllerCore that implicitly
+	// TODO: remove 	localparam	DelayedWB =	0; 
+	// there is some logic in BackendControllerCore that implicitly
 	// assumes REW==DWB.  Careful when enabling it.
-	localparam				DelayedWB =				0;
 
 	//--------------------------------------------------------------------------
 	//	System I/O
@@ -103,6 +80,7 @@ module TinyORAMCore(
 
 	input	[BECMDWidth-1:0] Cmd;
 	input	[ORAMU-1:0]		PAddr;
+	input	[DMWidth-1:0]	WMask;
 	input					CmdValid;
 	output 					CmdReady;
 
@@ -127,10 +105,30 @@ module TinyORAMCore(
 	input					DRAMReadDataValid;
 
 	output	[BEDWidth-1:0]	DRAMWriteData;
-	output	[DDRMWidth-1:0]	DRAMWriteMask;
 	output					DRAMWriteDataValid;
 	input					DRAMWriteDataReady;
 
+	//--------------------------------------------------------------------------
+	//	Utility interface
+	//--------------------------------------------------------------------------
+
+	input					Mode_DummyGen;
+
+	//--------------------------------------------------------------------------
+	//	Status/Debugging interface
+	//--------------------------------------------------------------------------
+	
+	output	[JTWidth_PMMAC-1:0] JTAG_PMMAC;
+	output	[JTWidth_UORAM-1:0] JTAG_UORAM;
+	output	[JTWidth_Frontend-1:0] JTAG_Frontend;	
+	
+	output	[JTWidth_AES-1:0] JTAG_AES;
+	output	[JTWidth_StashCore-1:0] JTAG_StashCore;
+	output	[JTWidth_Stash-1:0] JTAG_Stash;
+	output	[JTWidth_StashTop-1:0] JTAG_StashTop;	
+	output	[JTWidth_BackendCore-1:0] JTAG_BackendCore;
+	output	[JTWidth_Backend-1:0] JTAG_Backend;
+	
 	//--------------------------------------------------------------------------
 	//	Wires & Regs
 	//--------------------------------------------------------------------------
@@ -153,14 +151,15 @@ module TinyORAMCore(
 
 	`ifdef SIMULATION
 		initial begin
+			$display("[%m] DDRAWidth = %d", DDRAWidth);
+
 			if (ORAML + 1 > 32) begin
 				$display("[%m] WARNING: Designs with more than 32 levels will be slightly more expensive resource-wise, because path-deep FIFOs won't pack as efficiently into LUTRAM.");
 			end
 
 			if (DDRDWidth < BEDWidth ||
 				DebugDRAMReadTiming || // TODO this is commented out in backend right now ...
-				DDRDWidth % BEDWidth != 0 ||
-				DelayedWB && !EnableREW) begin
+				DDRDWidth % BEDWidth != 0) 	begin
 				$display("[%m] ERROR: Illegal parameter setting."); // See BucketLocal.vh for more information.
 				$finish;
 			end
@@ -171,7 +170,7 @@ module TinyORAMCore(
 	//	Clocking
 	//--------------------------------------------------------------------------
 
-	generate if (SlowAESClock || `ifdef ASIC 1 `else 0 `endif) begin:SLOW_AES
+	generate if (SlowAESClock || `ifndef FPGA 1 `else 0 `endif) begin:SLOW_AES
 		assign	AESClock =							Clock;
 	end else begin:FAST_AES
 		// Increases the clock by 50%
@@ -185,23 +184,26 @@ module TinyORAMCore(
 	//	Core modules
 	//--------------------------------------------------------------------------
 
+`ifndef FPGA
+	Frontend
+`else
 	Frontend #(  			.ORAMU(         		ORAMU),
 							.ORAML(         		ORAML),
 							.ORAMB(         		ORAMB),
 							.FEDWidth(				FEDWidth),
 							.EnableIV(				EnableIV),
-							.NumValidBlock( 		NumValidBlock),
 							.Recursion(     		Recursion),
 							.EnablePLB(				EnablePLB),
 							.PLBCapacity(   		PLBCapacity),
 							.PRFPosMap(				PRFPosMap))
-
+`endif
 				front_end(	.Clock(             	Clock),
 							.Reset(					Reset),
 
 							.CmdInReady(			CmdReady),
 							.CmdInValid(			CmdValid),
 							.CmdIn(					Cmd),
+							.WMaskIn(				WMask),
 							.ProgAddrIn(			PAddr),
 							.DataInReady(			DataInReady),
 							.DataInValid(			DataInValid),
@@ -221,8 +223,11 @@ module TinyORAMCore(
 							.StoreData(				StoreData),
 							.LoadDataReady(			LoadReady),
 							.LoadDataValid(			LoadValid),
-							.LoadData(				LoadData));
-
+							.LoadData(				LoadData),
+							.JTAG_PMMAC(			JTAG_PMMAC), 
+							.JTAG_UORAM(			JTAG_UORAM), 
+							.JTAG_Frontend(			JTAG_Frontend));
+	
 	PathORAMBackend #(		.ORAMB(					ORAMB),
 							.ORAMU(					ORAMU),
 							.ORAML(					ORAML),
@@ -234,12 +239,10 @@ module TinyORAMCore(
 							.EnableAES(				EnableAES),
 							.EnableREW(				EnableREW),
 							.EnableIV(				EnableIV),
-							.DelayedWB(				DelayedWB),
+							.DelayedWB(				1'b0),
 
 							.FEDWidth(				FEDWidth),
-							.BEDWidth(				BEDWidth),
-							.ORAMUValid(			ORAMUValid),
-							.DebugDRAMReadTiming(	DebugDRAMReadTiming))
+							.BEDWidth(				BEDWidth))
 				back_end (	.Clock(					Clock),
 			                .AESClock(				AESClock),
 							.Reset(					Reset),
@@ -266,9 +269,17 @@ module TinyORAMCore(
 							.DRAMReadDataValid(		DRAMReadDataValid),
 
 							.DRAMWriteData(			DRAMWriteData),
-							.DRAMWriteMask(			DRAMWriteMask),
 							.DRAMWriteDataValid(	DRAMWriteDataValid),
-							.DRAMWriteDataReady(	DRAMWriteDataReady));
+							.DRAMWriteDataReady(	DRAMWriteDataReady),
+							
+							.Mode_DummyGen(			Mode_DummyGen),
+							
+							.JTAG_AES(				JTAG_AES),
+							.JTAG_StashCore(		JTAG_StashCore), 
+							.JTAG_Stash(			JTAG_Stash), 
+							.JTAG_StashTop(			JTAG_StashTop), 
+							.JTAG_BackendCore(		JTAG_BackendCore), 
+							.JTAG_Backend(			JTAG_Backend));
 
 	//--------------------------------------------------------------------------
 endmodule

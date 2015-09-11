@@ -24,7 +24,9 @@ module StashTop(
 	FEWriteData, FEWriteDataValid, FEWriteDataReady,
 	
 	DRAMReadData, DRAMReadDataValid, DRAMReadDataReady,
-	DRAMWriteData, DRAMWriteDataValid, DRAMWriteDataReady
+	DRAMWriteData, DRAMWriteDataValid, DRAMWriteDataReady,
+	
+	JTAG_StashCore, JTAG_Stash, JTAG_StashTop
 	);
 
 	//--------------------------------------------------------------------------
@@ -38,8 +40,9 @@ module StashTop(
 	`include "BucketLocal.vh"
 	`include "CommandsLocal.vh"
 	
-	parameter				ORAMUValid =			21;
-															
+	`include "DMLocal.vh"
+	`include "JTAG.vh"
+		
 	localparam				STWidth =				3,
 							ST_Initialize =			3'd0,
 							ST_Idle =				3'd1,
@@ -95,6 +98,10 @@ module StashTop(
 	output	[BEDWidth-1:0]	DRAMWriteData;
 	output					DRAMWriteDataValid;
 	input					DRAMWriteDataReady;
+	
+	output	[JTWidth_StashCore-1:0] JTAG_StashCore;
+	output	[JTWidth_Stash-1:0] JTAG_Stash;
+	output	[JTWidth_StashTop-1:0] JTAG_StashTop;	
 	
 	//--------------------------------------------------------------------------
 	//	Wires & Regs
@@ -161,7 +168,7 @@ module StashTop(
 	//	Initial state
 	//--------------------------------------------------------------------------	
 	
-	`ifndef ASIC
+	`ifdef FPGA
 		initial begin
 			CS = ST_Initialize;
 		end
@@ -177,6 +184,13 @@ module StashTop(
 	Register1b 	errno5(Clock, Reset, LatchBECommand & StashAlmostFull & ~AccessIsDummy, 								ERROR_SOF);
 	
 	Register1b 	errANY(Clock, Reset, ERROR_ISC2 | ERROR_ISC3 | ERROR_ISC4 | ERROR_SOF, ERROR_StashTop);
+	
+	assign	JTAG_StashTop =							{
+														ERROR_ISC2, 
+														ERROR_ISC3, 
+														ERROR_ISC4, 
+														ERROR_SOF	
+													};
 	
 	`ifdef SIMULATION
 		always @(posedge Clock) begin
@@ -307,6 +321,7 @@ module StashTop(
 							.ORAMZ(					ORAMZ),
 							.ORAME(					ORAME),
 							.BEDWidth(				BEDWidth),
+							.EnableAES(				EnableAES),
 							.EnableIV(				EnableIV),
 							.EnableREW(				EnableREW))
 				in_convert(	.Clock(					Clock), 
@@ -338,7 +353,6 @@ module StashTop(
 							.BEDWidth(				BEDWidth),
 							.EnableIV(				EnableIV),
 							.Overclock(				Overclock),
-							.ORAMUValid(			ORAMUValid),
 							.StashOutBuffering(		4), // this should be good enough ...
 							.StopOnBlockNotFound(	1))
 				stash(		.Clock(					Clock),
@@ -398,9 +412,10 @@ module StashTop(
 							.PathReadComplete(		), // not connected
 							
 							.StashAlmostFull(		StashAlmostFull),
-							.StashOverflow(			),
-							.StashOccupancy(		)); // debugging
-
+							
+							.JTAG_StashCore(		JTAG_StashCore),
+							.JTAG_Stash(			JTAG_Stash));
+	
 	//--------------------------------------------------------------------------
 	//	[Writeback path] Buffers and up shifters
 	//--------------------------------------------------------------------------

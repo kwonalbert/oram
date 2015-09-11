@@ -17,21 +17,25 @@
 module UORAMController
 (
     Clock, Reset,
-    CmdInReady, CmdInValid, CmdIn, ProgAddrIn,
+    CmdInReady, CmdInValid, CmdIn, ProgAddrIn, WMaskIn,
     DataInReady, DataInValid, DataIn,
     ReturnDataReady, ReturnDataValid, ReturnData,
-    CmdOutReady, CmdOutValid, CmdOut, AddrOut, OldLeaf, NewLeaf,
+    CmdOutReady, CmdOutValid, CmdOut, AddrOut, WMaskOut, OldLeaf, NewLeaf,
 	StoreDataReady, StoreDataValid, StoreData,
-    LoadDataReady, LoadDataValid, LoadData
+    LoadDataReady, LoadDataValid, LoadData,
+	
+	JTAG_UORAM
 );
 
 	`include "PathORAM.vh"
 	`include "UORAM.vh"
-
+	
+	`include "DMLocal.vh"
     `include "CommandsLocal.vh"
     `include "CacheCmdLocal.vh"
     `include "PLBLocal.vh"
-
+	`include "JTAG.vh"
+	
     localparam MaxLogRecursion = 4;
 
     input Clock, Reset;
@@ -41,6 +45,7 @@ module UORAMController
     input CmdInValid;
     input [BECMDWidth-1:0] CmdIn;
     input [ORAMU-1:0] ProgAddrIn;
+	input [DMWidth-1:0] WMaskIn;
 
     // receive data from network
     output DataInReady;
@@ -57,6 +62,7 @@ module UORAMController
     output CmdOutValid;
     output [BECMDWidth-1:0] CmdOut;
     output [ORAMU-1:0] AddrOut;
+	output [DMWidth-1:0] WMaskOut;
     output [LeafOutWidth-1:0] OldLeaf, NewLeaf;
 
     // send data to backend
@@ -69,12 +75,15 @@ module UORAMController
     input  LoadDataValid;
     input  [FEDWidth-1:0] LoadData;
 	
+	output	[JTWidth_UORAM-1:0] JTAG_UORAM;
+	
 	// Save the input data in case the client really needs to send data before command
-	(* mark_debug = "FALSE" *) wire 	[FEDWidth-1:0] 	DataIn_Internal;
+	wire 	[FEDWidth-1:0] 	DataIn_Internal;
 	(* mark_debug = "TRUE" *) wire					DataInValid_Internal, DataInReady_Internal;
 
 	localparam				BlkSize_FEDChunks =		`divceil(ORAMB, FEDWidth);	
-	
+
+/*	
 	FIFORAM	#(				.Width(					FEDWidth),
 							.Buffering(				BlkSize_FEDChunks))
 				in_D_buf(	.Clock(					Clock),
@@ -85,6 +94,10 @@ module UORAMController
 							.OutData(				DataIn_Internal),
 							.OutSend(				DataInValid_Internal),
 							.OutReady(				DataInReady_Internal));
+*/
+	assign	DataIn_Internal = DataIn;
+	assign	DataInValid_Internal = DataInValid;
+	assign	DataInReady = DataInReady_Internal;
 
 	// check whether input is valid
 	(* mark_debug = "TRUE" *) wire	AddrOutofRange;
@@ -101,6 +114,8 @@ module UORAMController
 							.OutSend(				ERROR_OutOfRange),
 							.OutReady(				1'b0));
 							
+	assign	JTAG_UORAM =							ERROR_OutOfRange;
+							
 `ifdef SIMULATION		
 	always @ (posedge Clock) begin
 		if (CmdInReady && CmdInValid) begin
@@ -114,18 +129,19 @@ module UORAMController
 	
     // FrontEnd state machines
     (* mark_debug = "TRUE" *) wire [BECMDWidth-1:0] LastCmd;
-    Register #(.Width(2))
-        CmdReg (Clock, Reset, 1'b0, CmdInReady && CmdInValid, CmdIn, LastCmd);
+	wire [DMWidth-1:0] LastMask;
+    Register #(.Width(BECMDWidth + DMWidth))
+        CmdReg (Clock, Reset, 1'b0, CmdInReady && CmdInValid, {CmdIn, WMaskIn}, {LastCmd, LastMask});
 
     (* mark_debug = "TRUE" *) reg [MaxLogRecursion-1:0] QDepth;
     (* mark_debug = "TRUE" *) reg [ORAMU-1:0] AddrQ [Recursion-1:0];
 
     (* mark_debug = "TRUE" *) wire Preparing, Accessing;
-    (* mark_debug = "TRUE" *) wire RefillStarted, ExpectingProgramData;
+    (* mark_debug = "TRUE" *) wire RefillStarted, ExpectingProgramData, FakeAccess;
 
     // ================================== PosMapPLB ============================
     (* mark_debug = "TRUE" *) wire PPPCmdReady, PPPCmdValid;
-    (* mark_debug = "FALSE" *) wire [1:0] PPPCmd;
+    (* mark_debug = "TRUE" *) wire [1:0] PPPCmd;
     (* mark_debug = "FALSE" *) wire [ORAMU-1:0] PPPAddrIn, PPPAddrOut;
     (* mark_debug = "TRUE" *) wire PPPRefill;
     (* mark_debug = "FALSE" *) wire [LeafWidth-1:0] PPPRefillData;
@@ -136,7 +152,6 @@ module UORAMController
     PosMapPLB #(.ORAMU(             ORAMU),
                 .ORAML(             ORAML),
                 .ORAMB(             ORAMB),
-                .NumValidBlock(     NumValidBlock),
                 .Recursion(         Recursion),
                 .EnablePLB(			EnablePLB),
 				.PLBCapacity(       PLBCapacity),
@@ -165,7 +180,8 @@ module UORAMController
     (* mark_debug = "TRUE" *) wire PPPLookup, PPPInitRefill;
 
 	(* mark_debug = "TRUE" *) wire FakePLBMiss;	// hack to mimic recursive ORAM
-	assign FakePLBMiss = !EnablePLB && Preparing && PPPValid && QDepth < Recursion - 1;
+	localparam RecursionMinus1 = Recursion - 32'b1;
+	assign FakePLBMiss = !EnablePLB && Preparing && PPPValid && QDepth < RecursionMinus1;
 
     assign PPPMiss = PPPValid && (!PPPHit || FakePLBMiss);
     assign PPPUnInitialized = PPPValid && PPPHit && PPPUnInit;
@@ -173,20 +189,21 @@ module UORAMController
     assign PPPRefill = Accessing && (PPPRefillDataValid || PPPInitRefill);
     assign PPPCmdValid = PPPLookup || (PPPRefill && !RefillStarted);
     assign PPPCmd = PPPRefill ? (PPPInitRefill ? CacheInitRefill : CacheRefill)
-						: (Preparing && !EnablePLB && QDepth < Recursion-1) ? CacheRead : CacheWrite;
+						: (Preparing && !EnablePLB && QDepth < RecursionMinus1) ? CacheRead : CacheWrite;
 						// The PosMap entry that hits needs a CacheWrite; When PLB enabled, every lookup can hit, so need to use CacheWrite
 						// Ideally, PosMap entries that miss do not care about CacheRead vs. CacheWrite
 						// But the hack we add to disable PLB require CacheRead to entries that should've missed but in fact hit
     assign PPPAddrIn = PPPRefill ? AddrQ[QDepth] : AddrQ[QDepth];
 
-    assign CmdInReady = !Preparing && !Accessing && !ExpectingProgramData && PPPCmdReady;
+    assign CmdInReady = !Preparing && !Accessing && !ExpectingProgramData && PPPCmdReady && !FakeAccess;
+			// The first four are straight-forward. !FakeAccess has to be there because it is the counterpart of ExpectingProgramData
     assign PPPOutReady = Preparing ? PPPMiss :
                             ((PPPMiss && !PPPEvict) || (PPPUnInitialized && QDepth > 0) || CmdOutReady);
             // four cases:
             // (1) PLB miss in the prepare stage,
             // (2) refill but no evict, must have PPPMiss there, or it will misfire on Hit & UnInit
             // (3) uninitialized PosMap block
-            // (4) request send to backend
+            // (4) request sent to backend
     // =============================================================================
 
     // ============================== Cmd to Backend ==============================
@@ -200,8 +217,12 @@ module UORAMController
     // if EvictionRequest, write back a PosMap block; otherwise serve the next access in the queue
     assign CmdOut = (EvictionRequest || InitRequest) ? BECMD_Append
 						: DataBlockReq ? LastCmd : BECMD_ReadRmv;
+	assign WMaskOut = (EvictionRequest || InitRequest) ? {DMWidth{1'bx}}	
+						: DataBlockReq ? LastMask : {DMWidth{1'bx}};
+			// Note : this is because PosMap eviction is always append, and append does not need a mask (or PMMAC assumes mask is all 1 on an append)
+			// 		Be very careful if we decide to go for an inclusive PosMap/PLB design, in which case we do not mask for PLB block eviction
     assign AddrOut = EvictionRequest ? NumValidBlock + PPPAddrOut / LeafInBlock : AddrQ[QDepth];
-
+	
     assign SwitchReq = (CmdOutReady && CmdOutValid && !EvictionRequest) || (!DataBlockReq && PPPUnInitialized);
                     // transition to next access, after sending out or initializing the current one
     // =============================================================================
@@ -297,6 +318,7 @@ module UORAMController
                         .Cmd(               LastCmd),
 						.DumbRequest(		InitRequest),		// stupid read before write
                         .ExpectingProgramData(  ExpectingProgramData),
+						.FakeAccess(		FakeAccess),
 
                         // IO interface with network
                         .DataInReady(           DataInReady_Internal),

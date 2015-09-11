@@ -46,7 +46,9 @@ module Stash(
 	ReadData, ReadPAddr, ReadLeaf, ReadMAC,
 	ReadOutValid, ReadOutReady, BlockReadComplete, PathReadComplete,
 	
-	StashAlmostFull, StashOverflow, StashOccupancy
+	StashAlmostFull, StashOverflow, StashOccupancy,
+	
+	JTAG_StashCore, JTAG_Stash
 	);
 
 	//--------------------------------------------------------------------------
@@ -55,21 +57,24 @@ module Stash(
 	
 	`include "PathORAM.vh"
 	
-	`include "DDR3SDRAMLocal.vh" // TODO cleanup
+	`include "DDR3SDRAMLocal.vh"
 	`include "BucketLocal.vh"
 	`include "CommandsLocal.vh"
 	`include "StashLocal.vh"
 	
-	parameter				ORAMUValid =			21,
-	
-							// improves throughput for path writeback operations
+	`include "DMLocal.vh"
+	`include "JTAG.vh"
+			
+	parameter				// improves throughput for path writeback operations
 							// [if == 2, throughput will be <= 50%, == 3, 100% is possible, > 3 for very unpredictable DRAM]
 							StashOutBuffering =		3,
 								
 							// When we simulate, should we fail if we are looking for a block but cannot find it?
 							// KEEP THIS DEFAULTED TO 1
 							StopOnBlockNotFound = 	1;
-	
+
+	parameter				ORAMUValid = 			ORAML + 3; // Note: +3 assumes 50% utilization at Z=4
+
 	localparam				OBWidth =				`log2(BlkSize_BEDChunks * StashOutBuffering + 1);		
 		
 	localparam				STWidth =				4,
@@ -190,6 +195,9 @@ module Stash(
 	output					StashOverflow;
 	output	[SEAWidth-1:0] 	StashOccupancy;
 	
+	output	[JTWidth_StashCore-1:0] JTAG_StashCore;
+	output	[JTWidth_Stash-1:0] JTAG_Stash;
+	
 	//--------------------------------------------------------------------------
 	//	Wires & Regs
 	//-------------------------------------------------------------------------- 
@@ -301,7 +309,7 @@ module Stash(
 	//	Initial state
 	//--------------------------------------------------------------------------	
 	
-	`ifndef ASIC
+	`ifdef FPGA
 		initial begin
 			CS = ST_Reset;
 		end
@@ -327,6 +335,17 @@ module Stash(
 	
 	Register1b 	errANY(Clock, Reset, ERROR_BlockNotFound | ERROR_ISC1 | ERROR_ISC2 | ERROR_ISC3 | ERROR_ISC4 | ERROR_StashOverflow | ERROR_BOGUSU | ERROR_StashOverflowConservative, ERROR_Stash);
 
+	assign	JTAG_Stash =							{
+														ERROR_BlockNotFound, 
+														ERROR_ISC1, 
+														ERROR_ISC2, 
+														ERROR_ISC3, 
+														ERROR_ISC4, 
+														ERROR_StashOverflow, 
+														ERROR_BOGUSU, 
+														ERROR_StashOverflowConservative
+													};
+	
 	// TODO: add assertion to check that _every_ real block written to stash has a valid common subpath with the current leaf
 	
 	`ifdef SIMULATION
@@ -678,7 +697,10 @@ module Stash(
 							.ROAccess(				AccessSkipsWriteback),
 							
 							.CancelPushCommand(		StartWriteback_Pass),
-							.SyncComplete(			Core_AccessComplete));
+							.SyncComplete(			Core_AccessComplete),
+							.StartingEviction(		CSPathWriteback),
+							
+							.JTAG_StashCore(		JTAG_StashCore));
 
 	// leaf remapping step
 	assign	MappedLeaf =							(LookForBlock & FoundBlock_ThisCycle) ? RemapLeaf : Scan_Leaf;
@@ -836,7 +858,7 @@ module Stash(
 	//--------------------------------------------------------------------------
 	
 	// *2 = this is the largest number of blocks StashCore might still give us even after we tell it to stop
-	assign	OutSpaceGate =							OutBufferSpace > (BlkSize_BEDChunks * 2);	
+	assign	OutSpaceGate =							OutBufferSpace > (BlkSize_BEDChunks << 1);	
 	
 	assign	OutBufferInValid =						CSPathWriteback & Core_OutValid;
 	assign	OutHBufferInValid =						OutBufferInValid & BlockReadComplete_Internal;
@@ -845,8 +867,7 @@ module Stash(
 	assign	BlockReadCommit = 						BlockReadComplete & ReadOutValid & ReadOutReady;
 	
 	FIFORAM		#(			.Width(					BEDWidth),
-							.Buffering(				BlkSize_BEDChunks * StashOutBuffering)
-							`ifdef ASIC , .ASIC(1) `endif)
+							.Buffering(				BlkSize_BEDChunks * StashOutBuffering))
 				out_P_buf(	.Clock(					Clock),
 							.Reset(					Reset),
 							.InData(				Core_OutData),

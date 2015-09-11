@@ -31,9 +31,9 @@ module AES_DW
 
 	parameter W = 4;
 	parameter D = 12;
-	
+
 	`include "PathORAM.vh"
-	
+
      //--------------------------------------------------------------------------
      //	System I/O
      //--------------------------------------------------------------------------
@@ -44,7 +44,7 @@ module AES_DW
      //	Interface 1
      //--------------------------------------------------------------------------
 
-     input  [AESEntropy-1:0] 	DataIn;
+     input  [AESEntropy-1:0] 	 DataIn;
      input                       DataInValid;
      output                      DataInReady;
 
@@ -71,16 +71,18 @@ module AES_DW
     wire     [W*AESWidth-1:0]    AESRes[D-1:0];
     wire     [W-1:0]             AESResValid[D-1:0];
 
-	`ifndef ASIC
-		initial begin
-			Count = 0;
-			InTurn = 0;
-			OutTurn = 0;
-			for (i = 0; i < D; i = i + 1)
-				AESWorking[i] = 0;
-		end
-	`endif	
-	
+    reg	     [31:0]              i;
+
+	`ifdef FPGA
+	initial begin
+		Count = 0;
+		InTurn = 0;
+		OutTurn = 0;
+		for (i = 0; i < D; i = i + 1)
+			AESWorking[i] = 0;
+	end
+	`endif
+
     assign DInReady = Count < D;
     assign DOut = AESRes[OutTurn];
     assign DOutValid = &(AESResValid[OutTurn]);
@@ -98,7 +100,7 @@ module AES_DW
         if (Reset)
             InTurn <= 0;
         else if (DataInValid && DInReady) begin
-            if (InTurn >= D-1)
+            if (InTurn >= D-32'd1)
                 InTurn <= 0;
             else
                 InTurn <= InTurn + 1;
@@ -109,14 +111,12 @@ module AES_DW
         if (Reset)
             OutTurn <= 0;
         else if (DOutValid) begin
-            if (OutTurn >= D-1)
+            if (OutTurn >= D-32'd1)
                 OutTurn <= 0;
             else
                 OutTurn <= OutTurn + 1;
         end
     end
-
-    integer i;
 
     always @( posedge Clock ) begin
         if (Reset) begin

@@ -17,21 +17,25 @@
 module Frontend
 (
     Clock, Reset,
-    CmdInReady, CmdInValid, CmdIn, ProgAddrIn,
+    CmdInReady, CmdInValid, CmdIn, ProgAddrIn, WMaskIn,
     DataInReady, DataInValid, DataIn,
     ReturnDataReady, ReturnDataValid, ReturnData,
     CmdOutReady, CmdOutValid, CmdOut, AddrOut, OldLeaf, NewLeaf,
 	StoreDataReady, StoreDataValid, StoreData,
-    LoadDataReady, LoadDataValid, LoadData
+    LoadDataReady, LoadDataValid, LoadData,
+	
+	JTAG_PMMAC, JTAG_UORAM, JTAG_Frontend
 );
 
 	`include "PathORAM.vh"
 	`include "UORAM.vh"
-
+	
+	`include "DMLocal.vh"
     `include "CommandsLocal.vh"
     `include "CacheCmdLocal.vh"
     `include "PLBLocal.vh"
-
+	`include "JTAG.vh"
+	
     localparam MaxLogRecursion = 4;
 
     input Clock, Reset;
@@ -41,6 +45,7 @@ module Frontend
     input CmdInValid;
     input [BECMDWidth-1:0] CmdIn;
     input [ORAMU-1:0] ProgAddrIn;
+	input [DMWidth-1:0] WMaskIn;
 
     // receive data from network
     output DataInReady;
@@ -63,6 +68,11 @@ module Frontend
     input  StoreDataReady;
     output StoreDataValid;
     output [FEDWidth-1:0] StoreData;
+	
+	// Status/Debugging
+	output	[JTWidth_PMMAC-1:0] JTAG_PMMAC;
+	output	[JTWidth_UORAM-1:0] JTAG_UORAM;
+	output	[JTWidth_Frontend-1:0] JTAG_Frontend;	
 
     // receive response from backend
     output LoadDataReady;
@@ -72,6 +82,7 @@ module Frontend
 	wire CmdOutReady_Pre;
     wire CmdOutValid_Pre;
     wire [BECMDWidth-1:0] CmdOut_Pre;
+	wire [DMWidth-1:0] WMask_Int;
     wire [ORAMU-1:0] AddrOut_Pre;
     wire [LeafOutWidth-1:0] OldLeaf_Pre, NewLeaf_Pre;
 
@@ -83,11 +94,115 @@ module Frontend
     wire LoadDataValid_Pre;
     wire [FEDWidth-1:0] LoadData_Pre;
 	
+	// Debugging
+	
+	wire [BECMDWidth-1:0] CmdIn_Delay;
+    wire [ORAMU-1:0] ProgAddrIn_Delay;
+	wire [DMWidth-1:0] WMaskIn_Delay;
+	
+	wire 	CmdInReady_Delay,
+			CmdInValid_Delay,		
+			DataInReady_Delay,
+			DataInValid_Delay,
+			ReturnDataReady_Delay,
+			ReturnDataValid_Delay;
+	
+	wire	CmdOutReady_Pre_Delay, 
+			CmdOutValid_Pre_Delay, 
+			StoreDataReady_Pre_Delay, 
+			StoreDataValid_Pre_Delay, 
+			LoadDataReady_Pre_Delay, 
+			LoadDataValid_Pre_Delay;
+
+	wire	[DBDCWidth-1:0] UORAMCommandCount, PMMACCommandCount, 
+							UORAMDataLoadCount, UORAMDataStoreCount;
+							
+	wire	[DBCCWidth-1:0] PMMACDataLoadCount, PMMACDataStoreCount;		
+			
+	MCounter #(DBDCWidth) 	ucmd(Clock, Reset, CmdInReady_Delay && CmdInValid_Delay, UORAMCommandCount),
+							pcmd(Clock, Reset, CmdOutReady_Pre_Delay && CmdOutValid_Pre_Delay, PMMACCommandCount),
+							
+							udatal(Clock, Reset, ReturnDataReady_Delay && ReturnDataValid_Delay, UORAMDataLoadCount),
+							udatas(Clock, Reset, DataInReady_Delay && DataInValid_Delay, UORAMDataStoreCount);
+							
+	MCounter #(DBCCWidth) 	pdatal(Clock, Reset, LoadDataReady_Pre_Delay && LoadDataValid_Pre_Delay, PMMACDataLoadCount),
+							pdatas(Clock, Reset, StoreDataReady_Pre_Delay && StoreDataValid_Pre_Delay, PMMACDataStoreCount);	
+			
+	assign	JTAG_Frontend =							{
+														CmdInReady_Delay,
+														CmdInValid_Delay,		
+														DataInReady_Delay,
+														DataInValid_Delay,
+														ReturnDataReady_Delay,
+														ReturnDataValid_Delay,	
+
+														CmdOutReady_Pre_Delay, 
+														CmdOutValid_Pre_Delay, 
+														StoreDataReady_Pre_Delay, 
+														StoreDataValid_Pre_Delay, 
+														LoadDataReady_Pre_Delay, 
+														LoadDataValid_Pre_Delay,
+														
+														UORAMCommandCount,
+														PMMACCommandCount,
+														
+														UORAMDataLoadCount, 
+														UORAMDataStoreCount,
+														
+														PMMACDataLoadCount, 
+														PMMACDataStoreCount,
+														
+														CmdIn_Delay, 
+														ProgAddrIn_Delay, 	
+														WMaskIn_Delay
+													};
+	
+	Register	#(			.Width(					BECMDWidth + ORAMU + DMWidth))
+				lastcmd(	.Clock(					Clock),
+							.Reset(					Reset),
+							.Set(					1'b0),
+							.Enable(				CmdInValid && CmdInReady),
+							.In(					{CmdIn, 		ProgAddrIn, 		WMaskIn}),
+							.Out(					{CmdIn_Delay, 	ProgAddrIn_Delay, 	WMaskIn_Delay}));
+	
+	Pipeline 	#(JTWidth_FrontendF1 + JTWidth_FrontendF2) 
+				jtag_pipe(Clock, Reset, 
+													{
+														CmdInReady,
+														CmdInValid,		
+														DataInReady,
+														DataInValid,
+														ReturnDataReady,
+														ReturnDataValid,
+										
+														CmdOutReady_Pre, 
+														CmdOutValid_Pre, 
+														StoreDataReady_Pre, 
+														StoreDataValid_Pre, 
+														LoadDataReady_Pre, 
+														LoadDataValid_Pre
+													}, 
+													
+													{				
+														CmdInReady_Delay,
+														CmdInValid_Delay,		
+														DataInReady_Delay,
+														DataInValid_Delay,
+														ReturnDataReady_Delay,
+														ReturnDataValid_Delay,	
+
+														CmdOutReady_Pre_Delay, 
+														CmdOutValid_Pre_Delay, 
+														StoreDataReady_Pre_Delay, 
+														StoreDataValid_Pre_Delay, 
+														LoadDataReady_Pre_Delay, 
+														LoadDataValid_Pre_Delay
+													});	
+
 	UORAMController #(  	.ORAMU(         		ORAMU), 
 							.ORAML(         		ORAML), 
 							.ORAMB(         		ORAMB), 
 							.FEDWidth(				FEDWidth),
-							.NumValidBlock( 		NumValidBlock), 
 							.Recursion(     		Recursion),
 							.EnablePLB(				EnablePLB),
 							.PLBCapacity(   		PLBCapacity),
@@ -100,6 +215,7 @@ module Frontend
 							.CmdInValid(			CmdInValid), 
 							.CmdIn(					CmdIn), 
 							.ProgAddrIn(			ProgAddrIn),
+							.WMaskIn(				WMaskIn),
 							.DataInReady(			DataInReady), 
 							.DataInValid(			DataInValid), 
 							.DataIn(				DataIn),                                    
@@ -110,7 +226,8 @@ module Frontend
 							.CmdOutReady(			CmdOutReady_Pre), 
 							.CmdOutValid(			CmdOutValid_Pre), 
 							.CmdOut(				CmdOut_Pre), 
-							.AddrOut(				AddrOut_Pre), 
+							.AddrOut(				AddrOut_Pre),
+							.WMaskOut(				WMask_Int),
 							.OldLeaf(				OldLeaf_Pre), 
 							.NewLeaf(				NewLeaf_Pre), 
 							.StoreDataReady(		StoreDataReady_Pre), 
@@ -118,7 +235,9 @@ module Frontend
 							.StoreData(				StoreData_Pre),
 							.LoadDataReady(			LoadDataReady_Pre), 
 							.LoadDataValid(			LoadDataValid_Pre), 
-							.LoadData(				LoadData_Pre));
+							.LoadData(				LoadData_Pre),
+							
+							.JTAG_UORAM(			JTAG_UORAM));
 	
 	generate if (EnableIV) begin:MAC
 		IntegrityVerifier #(.ORAMU(         		ORAMU), 
@@ -129,7 +248,8 @@ module Frontend
 							.Reset(					Reset),
 
 							.FECommand(				CmdOut_Pre), 
-							.FEPAddr(				AddrOut_Pre), 
+							.FEPAddr(				AddrOut_Pre),
+							.FEWMask(				WMask_Int),
 							.FECurrentCounter(		OldLeaf_Pre),
 							.FERemappedCounter(		NewLeaf_Pre),
 							.FECommandValid(		CmdOutValid_Pre), 
@@ -156,7 +276,9 @@ module Frontend
 							
 							.BEStoreData(			StoreData),
 							.BEStoreValid(			StoreDataValid), 
-							.BEStoreReady(			StoreDataReady));	
+							.BEStoreReady(			StoreDataReady),
+							
+							.JTAG_PMMAC(			JTAG_PMMAC));	
 	end else begin:NO_MAC	
 		assign	CmdOut =							CmdOut_Pre;
 		assign	CmdOutValid =						CmdOutValid_Pre;

@@ -5,8 +5,6 @@
 //				Currently support Read/Write/Refill.
 //==============================================================================
 
-// TODO: How do we support counter tricks in PosMap?
-
 `include "Const.vh"
 
 module DM_Cache
@@ -69,7 +67,7 @@ module DM_Cache
         RefillCounter (Clock, Reset, 1'b0, 1'b0, Refilling, {(LogLineSize+1){1'bx}}, RefillOffset); // load = set = 0, in= x  
 
     assign RefillStart = CmdTransfer && (Cmd == CacheRefill);
-    assign RefillFinish = (LastCmd == CacheRefill) && (RefillOffset == (1 << LogLineSize) - 1);
+    assign RefillFinish = (LastCmd == CacheRefill) && (RefillOffset + 32'd1 == 32'd1 << LogLineSize);
     assign Refilling = RefillStart || (LastCmd == CacheRefill && RefillOffset > 0);
     assign RefillWriting = Refilling && RefillOffset[0];
     
@@ -117,10 +115,10 @@ module DM_Cache
     assign DataIn = (IsLastWrite && !WriteLate) ? LastDIn : DIn;
 
     // data and tag array
-    RAM #(.DWidth(DataWidth), .AWidth(DArrayAddrWidth)  `ifdef ASIC , .ASIC(1) `endif ) 
+    RAM #(.DWidth(DataWidth), .AWidth(DArrayAddrWidth)  `ifndef FPGA_MEMORY , .SRAM(1) `endif ) 
         DataArray(Clock, Reset, DataEnable, DataWrite, DArrayAddr, DataIn, DOut);
 
-    RAM #(.DWidth(TagWidth+1+ExtraTagWidth), .AWidth(TArrayAddrWidth) `ifdef ASIC , .ASIC(1) `endif ) 
+    RAM #(.DWidth(TagWidth+1+ExtraTagWidth), .AWidth(TArrayAddrWidth) `ifndef FPGA_MEMORY , .SRAM(1) `endif ) 
         TagArray(Clock, Reset, TagEnable, TagWrite, TArrayAddr, TagIn, TagOut);  
  
     // output for cache outcome

@@ -42,8 +42,8 @@ module BackendCoreController(
 	StashAlmostFull,
 
 	ROPAddr, ROLeaf, REWRoundDummy,
-	ROStartCCValid, ROStartAESValid,
-	ROStartCCReady, ROStartAESReady
+	
+	Mode_DummyGen
 	);
 
 	//--------------------------------------------------------------------------
@@ -52,9 +52,10 @@ module BackendCoreController(
 
 	`include "PathORAM.vh"
 
+	`include "CommandsLocal.vh"
+	`include "TrafficGenLocal.vh"
 	`include "DDR3SDRAMLocal.vh"
 	`include "BucketLocal.vh"
-	`include "CommandsLocal.vh"
 
 	localparam				STWidth =				4,
 							ST_Idle =				4'd0,
@@ -124,9 +125,13 @@ module BackendCoreController(
 
 	output reg [ORAMU-1:0]	ROPAddr;
 	output reg [ORAML-1:0]	ROLeaf;
-	output					ROStartCCValid, ROStartAESValid;
-	input					ROStartCCReady, ROStartAESReady;
 	output reg				REWRoundDummy;
+
+	//--------------------------------------------------------------------------
+	//	Utility Interface
+	//--------------------------------------------------------------------------
+	
+	input					Mode_DummyGen;
 
 	//--------------------------------------------------------------------------
 	//	Wires & Regs
@@ -147,7 +152,7 @@ module BackendCoreController(
 	
 	(* mark_debug = "TRUE" *)	wire					SetDummy, ClearDummy, AccessIsDummy_Reg, AccessIsDummy;
 		
-	(* mark_debug = "FALSE" *)	wire	[ORAML-1:0]		DummyLeaf;
+	(* mark_debug = "FALSE" *)	wire	[ORAML-1:0]		DummyLeaf_Pre, DummyLeaf;
 	(* mark_debug = "FALSE" *)	wire					DummyLeaf_Valid;
 	(* mark_debug = "FALSE" *)	wire	[PRNGLWidth-1:0] DummyLeaf_Wide;	
 	
@@ -164,7 +169,7 @@ module BackendCoreController(
 	Register #( .Width(1),	.Initial(1'b0))
 		first_access (Clock, Reset, CommandRequest, 1'b0, 1'bx, OneAccessHasOccurred);
 	
-	`ifndef ASIC
+	`ifdef FPGA
 		initial begin
 			CS = ST_Idle;
 		end 
@@ -205,7 +210,7 @@ module BackendCoreController(
 							.Set(       			RW_W_DoneAlarm),
 							.Out(       			DataRWDone));
 
-	assign	OperationComplete = 					Addr_RO_W_DoneAlarm | ( (DelayedWB == 1 | AddrRWDone) & DataRWDone);
+	assign	OperationComplete = 					Addr_RO_W_DoneAlarm | (AddrRWDone & DataRWDone);
 	assign	CommandDone =							(CSAppendWait & StashCommandReady) | (OperationComplete & ~AccessIsDummy);
 
 	assign	Stash_AppendCmdValid =					DummyLeaf_Valid & CommandRequest & (Command == BECMD_Append);
@@ -223,9 +228,7 @@ module BackendCoreController(
 		NS = 										CS;
 		case (CS)
 			ST_Idle :
-				if (		DelayedWB & Addr_RWAccess & Addr_PathWriteback)
-					NS =							ST_AddrGenWrite;
-				else if (	StashCommandReady & Stash_DummyCmdValid) // stash capacity check gets higher priority than append
+				if (	StashCommandReady & Stash_DummyCmdValid) // stash capacity check gets higher priority than append
 					if (ROAccess)
 						NS =						ST_CCROStart;
 					else
@@ -249,13 +252,12 @@ module BackendCoreController(
 			//
 			// Main access states
 			//
-			ST_CCROStart : 
-				if (ROStartCCReady && EnableAES == 1)
+			ST_CCROStart : // TODO: we can remove this state now that ROStart...Ready is gone
+				if (EnableAES)
 					NS =							ST_AESROStart;
-				else if (ROStartCCReady)
+				else 
 					NS =							ST_AddrGenRead;
-			ST_AESROStart : 
-				if (ROStartAESReady)
+			ST_AESROStart : // TODO: we can remove this state now that ROStart...Ready is gone
 					NS =							ST_AddrGenRead;
 			ST_AddrGenRead :
 				if (AddrGenInReady)
@@ -264,14 +266,10 @@ module BackendCoreController(
 				if (StashCommandReady)
 					NS =							ST_Read;
 			ST_Read :
-				if (		(RW_R_DoneAlarm | RO_R_DoneAlarm) & DelayedWB & RWAccess)
-					NS =							ST_StashWrite;
-				else if (	 RW_R_DoneAlarm | RO_R_DoneAlarm)
+				if (	 RW_R_DoneAlarm | RO_R_DoneAlarm)
 					NS =							ST_AddrGenWrite;
 			ST_AddrGenWrite :
-				if (		AddrGenInReady & DelayedWB & Addr_RWAccess & Addr_PathWriteback)
-					NS =							ST_AddrGenWrite_DWB;
-				else if (	AddrGenInReady)
+				if (	AddrGenInReady)
 					NS =							ST_StashWrite;
 			ST_StashWrite :
 				if (StashCommandReady)
@@ -335,21 +333,18 @@ module BackendCoreController(
 		assign	ClearDummy =						CSIdle & ~StashAlmostFull & ~RWAccess;
 		assign	SetDummy =							CSIdle & (StashAlmostFull | (RWAccess & OneAccessHasOccurred));
 
-		assign	DummyLeaf =							(Addr_RWAccess) ? GentryLeaf : DummyLeaf_Wide[ORAML-1:0];
-
-		assign	ROStartCCValid =					CS == ST_CCROStart;
-		assign	ROStartAESValid =					CS == ST_AESROStart;
+		assign	DummyLeaf =							(Addr_RWAccess) ? GentryLeaf : DummyLeaf_Pre;
 	
 		assign	ROPAddr_Pre =						PAddr;
 		assign	ROLeaf_Pre =						(REWRoundDummy_Pre) ? DummyLeaf : CurrentLeaf;
 		assign	REWRoundDummy_Pre =					AccessIsDummy;
-		if (Overclock) begin
+		if (Overclock) begin:OCLK
 			always @(posedge Clock) begin
 				ROPAddr <=							ROPAddr_Pre;
 				ROLeaf <=							ROLeaf_Pre;
 				REWRoundDummy <=					REWRoundDummy_Pre;
 			end
-		end else begin
+		end else begin:UCLK
 			always @( * ) begin
 				ROPAddr =							ROPAddr_Pre;
 				ROLeaf =							ROLeaf_Pre;
@@ -362,18 +357,21 @@ module BackendCoreController(
 		assign	ClearDummy =						CSIdle & ~StashAlmostFull;
 		assign	SetDummy =							CSIdle & StashAlmostFull;
 
-		assign	DummyLeaf =							DummyLeaf_Wide[ORAML-1:0];
-
-		assign	ROStartCCValid =					1'b0;
-		assign	ROStartAESValid =					1'b0;
+		assign	DummyLeaf =							DummyLeaf_Pre;
 		
+`ifdef FPGA
 		initial begin
 			ROPAddr =								{ORAMU{1'bx}};
 			ROLeaf =								{ORAML{1'bx}};
 			REWRoundDummy =							1'b0;
 		end
+`endif
 	end endgenerate
 
+	//--------------------------------------------------------------------------
+	//	Dummy access control
+	//--------------------------------------------------------------------------	
+	
 	Register	#(			.Width(					1))
 				dummy_reg(	.Clock(					Clock),
 							.Reset(					Reset | ClearDummy),
@@ -381,7 +379,7 @@ module BackendCoreController(
 							.Enable(				1'b0),
 							.In(					1'bx),
 							.Out(					AccessIsDummy_Reg));
-	assign	AccessIsDummy =							AccessIsDummy_Reg & ~ClearDummy;
+	assign	AccessIsDummy =							(AccessIsDummy_Reg & ~ClearDummy) | Mode_DummyGen;
 
 	PRNG 		#(			.RandWidth(				PRNGLWidth)) 
 				leaf_gen(	.Clock(					Clock),
@@ -390,7 +388,8 @@ module BackendCoreController(
 							.RandOutValid(			DummyLeaf_Valid),
 							.RandOut(				DummyLeaf_Wide),
 							.SecretKey(				128'hd8_40_e1_a8_dc_ca_e7_ec_d9_1f_61_48_7a_f2_cb_73)); // TODO make dynamic
-
+	assign	DummyLeaf_Pre =							(Mode_DummyGen) ? DummyGenLeaf : DummyLeaf_Wide[ORAML-1:0];
+							
 	//--------------------------------------------------------------------------
 	//	Stash Interface
 	//--------------------------------------------------------------------------

@@ -7,72 +7,72 @@
 
 //==============================================================================
 //	Module:		PathORAMBackendCore
-//	Desc:		Stash, DRAM address and top level state machine that interfaces 
+//	Desc:		Stash, DRAM address and top level state machine that interfaces
 //				with the FrontEnd.
 //==============================================================================
 module PathORAMBackendCore(
 	Clock, Reset,
 
-	Command, PAddr, CurrentLeaf, RemappedLeaf, 
+	Command, PAddr, CurrentLeaf, RemappedLeaf,
 	CommandValid, CommandReady,
 
-	LoadData, 
+	LoadData,
 	LoadValid, LoadReady,
 
 	StoreData,
 	StoreValid, StoreReady,
-	
+
 	DRAMCommandAddress, DRAMCommand, DRAMCommandValid, DRAMCommandReady,
 	DRAMReadData, DRAMReadDataValid, DRAMReadDataReady,
 	DRAMWriteData, DRAMWriteDataValid, DRAMWriteDataReady,
 
-	ROPAddr, ROLeaf, REWRoundDummy, 
-	ROStartCCValid, ROStartAESValid,
-	ROStartCCReady, ROStartAESReady,
+	ROPAddr, ROLeaf, REWRoundDummy,
 	
-	DRAMInitComplete
+	Mode_DummyGen,
+	
+	JTAG_StashCore, JTAG_Stash, JTAG_StashTop, JTAG_BackendCore
 	);
-		
+
 	//--------------------------------------------------------------------------
 	//	Parameters & Constants
 	//--------------------------------------------------------------------------
 
 	`include "PathORAM.vh"
-	
+
 	`include "DDR3SDRAMLocal.vh"
 	`include "BucketLocal.vh"
 	`include "IVLocal.vh"
 	`include "CommandsLocal.vh"
 	
-	parameter				ORAMUValid =			21;
-									
+	`include "DMLocal.vh"
+	`include "JTAG.vh"
+
 	localparam				STWidth =				2,
-							ST_Initialize =			2'd0,
-							ST_Idle =				2'd1,
-							ST_Append =				2'd2,
-							ST_Access =				2'd3;
-	
+							ST_Idle =				2'd0,
+							ST_Append =				2'd1,
+							ST_Access =				2'd2;
+
 	localparam				BBEDWidth =				`max(`log2(BlkSize_BEDChunks + 1), 1); // Block BED width
-							
+
 	//--------------------------------------------------------------------------
 	//	System I/O
 	//--------------------------------------------------------------------------
-		
+
   	input 					Clock, Reset;
-	
+
 	//--------------------------------------------------------------------------
 	//	Frontend Interface
 	//--------------------------------------------------------------------------
 
 	input	[BECMDWidth-1:0] Command;
 	input	[ORAMU-1:0]		PAddr;
-	input	[ORAML-1:0]		CurrentLeaf; // If Command == Append, this is XX 
+	input	[ORAML-1:0]		CurrentLeaf; // If Command == Append, this is XX
 	input	[ORAML-1:0]		RemappedLeaf;
 	input					CommandValid;
 	output 					CommandReady;
 
 	// TODO set CommandReady = 0 if LoadDataReady = 0 (i.e., the front end can't take our result!)
-	
+
 	output	[FEDWidth-1:0]	LoadData;
 	output					LoadValid;
 	input 					LoadReady;
@@ -80,7 +80,7 @@ module PathORAMBackendCore(
 	input	[FEDWidth-1:0]	StoreData;
 	input 					StoreValid;
 	output 					StoreReady;
-	
+
 	//--------------------------------------------------------------------------
 	//	DRAM Interface
 	//--------------------------------------------------------------------------
@@ -89,11 +89,11 @@ module PathORAMBackendCore(
 	output	[DDRCWidth-1:0]	DRAMCommand;
 	output					DRAMCommandValid;
 	input					DRAMCommandReady;
-	
+
 	input	[BEDWidth-1:0]	DRAMReadData;
 	input					DRAMReadDataValid;
 	output					DRAMReadDataReady;
-	
+
 	output	[BEDWidth-1:0]	DRAMWriteData;
 	output					DRAMWriteDataValid;
 	input					DRAMWriteDataReady;
@@ -101,33 +101,39 @@ module PathORAMBackendCore(
 	//--------------------------------------------------------------------------
 	//	REW Interface
 	//--------------------------------------------------------------------------
-	
+
 	output  [ORAMU-1:0]		ROPAddr;
 	output  [ORAML-1:0]		ROLeaf;
 	output 					REWRoundDummy;
-	
-	output					ROStartCCValid, ROStartAESValid;
-	input					ROStartCCReady, ROStartAESReady;	
-	
-	//--------------------------------------------------------------------------
-	//	Status Interface
-	//--------------------------------------------------------------------------
 
-	output					DRAMInitComplete;
-								
+	//--------------------------------------------------------------------------
+	//	Utility Interface
+	//--------------------------------------------------------------------------
+	
+	input					Mode_DummyGen;
+	
+	//--------------------------------------------------------------------------
+	//	Status/Debugging Interface
+	//--------------------------------------------------------------------------
+	
+	output	[JTWidth_StashCore-1:0] JTAG_StashCore;
+	output	[JTWidth_Stash-1:0] JTAG_Stash;
+	output	[JTWidth_StashTop-1:0] JTAG_StashTop;	
+	output	[JTWidth_BackendCore-1:0] JTAG_BackendCore;
+	
 	//--------------------------------------------------------------------------
 	//	Wires & Regs
-	//-------------------------------------------------------------------------- 
+	//--------------------------------------------------------------------------
 
 	// Control logic
 
 	(* mark_debug = "TRUE" *)	reg		[STWidth-1:0]	CS, NS;
-	wire					CSInitialize, CSIdle, CSAppend, CSAccess;
+	wire					CSIdle, CSAppend, CSAccess;
 
 	(* mark_debug = "FALSE" *)	wire					Stash_AppendCmdValid, Stash_RdRmvCmdValid, Stash_UpdateCmdValid;
-		
+
 	// Front-end interfaces
-	
+
 	(* mark_debug = "FALSE" *)	wire	[BECMDWidth-1:0] Command_Internal;
 	(* mark_debug = "FALSE" *)	wire	[ORAMU-1:0]		PAddr_Internal;
 	(* mark_debug = "FALSE" *)	wire	[ORAML-1:0]		CurrentLeaf_Internal, RemappedLeaf_Internal;
@@ -136,43 +142,32 @@ module PathORAMBackendCore(
 	wire	[BEPWidth-1:0]	MACSCount;
 	wire	[ORAMH-1:0]		Stash_ReturnMAC;
 	wire					StoreValid_Pre, StoreReady_Pre, StoringMAC, Store_MACValid;
-		
+
 	wire	[FEDWidth-1:0]	LoadData_Pre;
-	wire					LoadValid_Pre, LoadReady_Pre;	
-			
+	wire					LoadValid_Pre, LoadReady_Pre;
+
 	(* mark_debug = "FALSE" *)	wire	[BBEDWidth-1:0] EvictBuf_Chunks;
 	(* mark_debug = "FALSE" *)	wire	[BBEDWidth-1:0] ReturnBuf_Space;
-		
-	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	Store_ShiftBufData;	
+
+	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	Store_ShiftBufData;
 	(* mark_debug = "FALSE" *)	wire					Store_ShiftBufValid, Store_ShiftBufReady;
-	
+
 	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	Load_ShiftBufData;
 	(* mark_debug = "FALSE" *)	wire					Load_ShiftBufValid, Load_ShiftBufReady;
-		
+
 	// Stash
-	
-	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	Stash_StoreData;						
+
+	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	Stash_StoreData;
 	(* mark_debug = "FALSE" *)	wire					Stash_StoreDataValid, Stash_StoreDataReady;
-	
+
 	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	Stash_ReturnData;
 	wire					Stash_ReturnComplete;
 	(* mark_debug = "FALSE" *)	wire					Stash_ReturnDataValid, Stash_ReturnDataReady;
-	
+
 	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	Stash_DRAMWriteData;
 	(* mark_debug = "FALSE" *)	wire					Stash_DRAMWriteDataValid, Stash_DRAMWriteDataReady;
-	
+
 	(* mark_debug = "FALSE" *)	wire					StashAlmostFull;
-	
-	// ORAM initialization
-	
-	(* mark_debug = "FALSE" *)	wire	[DDRAWidth-1:0]	DRAMInit_DRAMCommandAddress;
-	(* mark_debug = "FALSE" *)	wire	[DDRCWidth-1:0]	DRAMInit_DRAMCommand;
-	(* mark_debug = "FALSE" *)	wire					DRAMInit_DRAMCommandValid, DRAMInit_DRAMCommandReady;
-
-	(* mark_debug = "FALSE" *)	wire	[BEDWidth-1:0]	DRAMInit_DRAMWriteData;
-	(* mark_debug = "FALSE" *)	wire					DRAMInit_DRAMWriteDataValid, DRAMInit_DRAMWriteDataReady;
-
-	(* mark_debug = "FALSE" *)	wire					DRAMInitializing;
 
 	// Address generator
 
@@ -185,7 +180,7 @@ module PathORAMBackendCore(
 	(* mark_debug = "FALSE" *)	wire					AddrGen_DRAMCommandValid_Internal, AddrGen_DRAMCommandReady_Internal;
 
 	// Stash
-	
+
 	(* mark_debug = "FALSE" *)	wire	[STCMDWidth-1:0] Stash_Command;
 	(* mark_debug = "FALSE" *)	wire					Stash_CommandValid, Stash_CommandReady;
 
@@ -207,27 +202,32 @@ module PathORAMBackendCore(
 	(* mark_debug = "FALSE" *)	wire					AddrGen_PathRead, AddrGen_HeaderOnly;
 
 	// debugging
-	
+
 	(* mark_debug = "TRUE" *)	wire					ERROR_OF1, ERROR_OF2, ERROR_BEndInner;
-	
+
 	//--------------------------------------------------------------------------
 	//	Initial state
 	//--------------------------------------------------------------------------
 
-	`ifndef ASIC
+	`ifdef FPGA
 		initial begin
-			CS = ST_Initialize;
+			CS = ST_Idle;
 		end
 	`endif
 
 	//--------------------------------------------------------------------------
 	//	Simulation checks
 	//--------------------------------------------------------------------------
-	
-	Register1b 	errno1(Clock, Reset, DRAMReadDataValid && ~DRAMReadDataReady, 			ERROR_OF1);	
-	Register1b 	errno2(Clock, Reset, Stash_ReturnDataValid && !Stash_ReturnDataReady, 	ERROR_OF2);	
+
+	Register1b 	errno1(Clock, Reset, DRAMReadDataValid && ~DRAMReadDataReady, 			ERROR_OF1);
+	Register1b 	errno2(Clock, Reset, Stash_ReturnDataValid && !Stash_ReturnDataReady, 	ERROR_OF2);
 	Register1b 	errANY(Clock, Reset, ERROR_OF1 || ERROR_OF2,							ERROR_BEndInner);
-							
+
+	assign	JTAG_BackendCore =						{
+														ERROR_OF1,
+														ERROR_OF2
+													};
+	
 	`ifdef SIMULATION
 		reg [STWidth-1:0] CS_Delayed;
 		integer WriteCount_Sim = 0;
@@ -238,17 +238,17 @@ module PathORAMBackendCore(
 
 			if (ERROR_OF1) begin
 				$display("[%m @ %t] ERROR: BEnd needed backpressure!", $time);
-				$finish;			
+				$finish;
 			end
-			
+
 			if (ERROR_OF2) begin
 				$display("[%m @ %t] ERROR: BEnd load buffer needed backpressure! (or we returned data when we shouldn't have ...)", $time);
-				$finish;						
+				$finish;
 			end
-			
+
 			if (CSAccess) StartedFirstAccess <= 1'b1;
 
-			if (~CSInitialize & DRAMWriteDataValid & DRAMWriteDataReady)
+			if (DRAMWriteDataValid & DRAMWriteDataReady)
 				WriteCount_Sim = WriteCount_Sim + 1;
 
 			if (StartedFirstAccess & DRAMReadDataValid & DRAMReadDataReady & (WriteCount_Sim % PathSize_DRBursts)) begin
@@ -257,14 +257,13 @@ module PathORAMBackendCore(
 				$finish;
 			end
 
-	`ifdef SIMULATION_VERBOSE_BE
 			if (CS_Delayed != CS) begin
 				if (CSAccess)
-					$display("[%m @ %t] Backend: start access, dummy = %b, command = %x, leaf = %x", $time, AccessIsDummy, Command_Internal, AddrGen_Leaf);
+					$display("[%m @ %t] Backend: start access, dummy = %b, command = %x, leaf = %x", $time, Stash_AccessIsDummy, Command_Internal, AddrGen_Leaf);
 				if (CSAppend)
 					$display("[%m @ %t] Backend: start append", $time);
 			end
-
+	`ifdef SIMULATION_VERBOSE_BE
 			if (DRAMCommandValid & DRAMCommandReady) begin
 				$display("[%m @ %t] DRAM command write? = %b, addr = %d (hex = %x)", $time, DRAMCommand == DDR3CMD_Write, DRAMCommandAddress, DRAMCommandAddress);
 			end
@@ -299,7 +298,6 @@ module PathORAMBackendCore(
 	//	Control logic
 	//--------------------------------------------------------------------------
 
-	assign	CSInitialize =							CS == ST_Initialize;
 	assign	CSIdle =								CS == ST_Idle;
 	assign	CSAppend =								CS == ST_Append;
 	assign	CSAccess =								CS == ST_Access;
@@ -309,7 +307,7 @@ module PathORAMBackendCore(
 	assign	Stash_AppendCmdValid =					CSIdle & Command_InternalValid & (Command_Internal == BECMD_Append) & (EvictBuf_Chunks >= BlkSize_BEDChunks) & Store_MACValid;
 	assign	Stash_UpdateCmdValid =					CSIdle & Command_InternalValid & (Command_Internal == BECMD_Update) & (EvictBuf_Chunks >= BlkSize_BEDChunks) & Store_MACValid;
 	assign	Stash_RdRmvCmdValid = 					CSIdle & Command_InternalValid & ((Command_Internal == BECMD_Read) | (Command_Internal == BECMD_ReadRmv)) & (ReturnBuf_Space >= BlkSize_BEDChunks);
-	
+
 	assign	Control_Command =						Command_Internal;
 	assign	Control_PAddr =							PAddr_Internal;
 	assign	Control_CurrentLeaf =					CurrentLeaf_Internal;
@@ -319,16 +317,13 @@ module PathORAMBackendCore(
 	assign	Command_InternalReady =					Control_CommandDone & (CSAppend | CSAccess);
 
 	always @(posedge Clock) begin
-		if (Reset) CS <= 							ST_Initialize;
+		if (Reset) CS <= 							ST_Idle;
 		else CS <= 									NS;
 	end
 
 	always @( * ) begin
 		NS = 										CS;
 		case (CS)
-			ST_Initialize :
-				if (DRAMInitComplete)
-					NS =						 	ST_Idle;
 			ST_Idle :
 				if (~ERROR_BEndInner)
 					if (Stash_AppendCmdValid) // do appends first ("greedily") because they are cheap
@@ -349,18 +344,18 @@ module PathORAMBackendCore(
 	//--------------------------------------------------------------------------
 	//	Front-end stores
 	//--------------------------------------------------------------------------
-	
+
 	generate if (EnableIV) begin:STORE_MAC
 		wire	[MACPADWidth-1:0] Stash_MAC_Wide;
 		wire				StoreMACValid, StoreMACReady;
 
 		MCounter #(BEPWidth) MAC_sc(Clock, 	Reset || Control_CommandDone, StoreValid && StoreReady, MACSCount);
-	
+
 		assign	StoringMAC =						MACSCount >= BlkSize_FEDChunks;
 		assign	StoreReady =						CSIdle && ((StoringMAC) ? StoreMACReady : StoreReady_Pre);
-		
+
 		assign	StoreMACValid =						CSIdle && StoreValid && StoringMAC;
-		
+
 		FIFOShiftRound #(	.IWidth(				FEDWidth),
 							.OWidth(				MACPADWidth),
 							.Reverse(				1))
@@ -378,9 +373,9 @@ module PathORAMBackendCore(
 		assign	StoringMAC =						1'b0;
 		assign	StoreReady =						CSIdle && StoreReady_Pre;
 	end endgenerate
-	
+
 	assign	StoreValid_Pre =						CSIdle && StoreValid && !StoringMAC;
-	
+
 	FIFOShiftRound #(		.IWidth(				FEDWidth),
 							.OWidth(				BEDWidth))
 				st_shift(	.Clock(					Clock),
@@ -410,26 +405,33 @@ module PathORAMBackendCore(
 	//--------------------------------------------------------------------------
 
 	generate if (EnableIV) begin:LOAD_MAC
+		wire	[MACPADWidth-1:0] LoadMACData_Pre;
 		wire	[FEDWidth-1:0] LoadMACData;
 		wire				LoadMACValid, LoadMACReady;
 		wire				BlockLoaded, LoadingMAC, LoadComplete;
-		
+
 		CountAlarm  #(  	.IThreshold(			BlkSize_FEDChunks),
 							.Threshold(             BlkSize_FEDChunks + MAC_FEDChunks))
 				MAC_lc(		.Clock(					Clock),
 							.Reset(					Reset),
 							.Enable(				LoadValid && LoadReady),
 							.Intermediate(			BlockLoaded),
-							.Done(					LoadComplete));	
-		
+							.Done(					LoadComplete));
+
 		Register1b ldm_m(Clock, Reset || LoadComplete, BlockLoaded, LoadingMAC);
-	
+
+		if (MACPADWidth != ORAMH) begin:LMACWIDE
+			assign	LoadMACData_Pre =				{{MACPADWidth-ORAMH{1'bx}}, Stash_ReturnMAC};
+		end else begin:LMACNARROW
+			assign	LoadMACData_Pre =				Stash_ReturnMAC;
+		end
+		
 		FIFOShiftRound #(	.IWidth(				MACPADWidth),
 							.OWidth(				FEDWidth),
 							.Reverse(				1))
 				st_m_shift(	.Clock(					Clock),
 							.Reset(					Reset),
-							.InData(				{{MACPADWidth-ORAMH{1'bx}}, Stash_ReturnMAC}),
+							.InData(				LoadMACData_Pre),
 							.InValid(				Stash_ReturnComplete),
 							.InAccept(				),
 							.OutData(				LoadMACData),
@@ -445,7 +447,7 @@ module PathORAMBackendCore(
 		assign	LoadValid =							LoadValid_Pre;
 		assign	LoadReady_Pre =						LoadReady;
 	end endgenerate
-	
+
 	// SECURITY: Don't perform a read/rm until the front-end can take a whole block
 	// NOTE: this should come before the shifter because the Stash ReturnData path
 	// doesn't have backpressure
@@ -530,10 +532,7 @@ module PathORAMBackendCore(
 							.ROLeaf(				ROLeaf),
 							.REWRoundDummy(			REWRoundDummy),
 							
-							.ROStartCCValid(		ROStartCCValid), 
-							.ROStartAESValid(		ROStartAESValid),
-							.ROStartCCReady(		ROStartCCReady), 
-							.ROStartAESReady(		ROStartAESReady));
+							.Mode_DummyGen(			Mode_DummyGen));
 
 	//--------------------------------------------------------------------------
 	//	AddrGen
@@ -574,43 +573,6 @@ module PathORAMBackendCore(
 	end endgenerate
 
 	//--------------------------------------------------------------------------
-	//	DRAM Initialization
-	//--------------------------------------------------------------------------
-
-	// Basic path ORAM needs to zero/encrypt valid bits in a bucket.
-	// REW ORAM uses gentry bucket version #s to determine whether a bucket is
-	// valid; thus no initialization is necessary.
-
-	generate if (EnableREW || 1) begin:AUTO_INIT // TODO FIX RE-ENABLE DRAM INIT
-		assign	DRAMInitComplete =					1'b1;
-		assign	DRAMInit_DRAMCommandAddress =		{DDRAWidth{1'bx}};
-		assign	DRAMInit_DRAMCommand =				DDR3CMD_Write;
-		assign	DRAMInit_DRAMCommandValid =			1'b0;
-
-		assign	DRAMInit_DRAMWriteData =			{BEDWidth{1'bx}};
-		assign	DRAMInit_DRAMWriteDataValid =		1'b0;
-	end else begin:DRAM_INIT
-		DRAMInitializer #(	.ORAMB(					ORAMB),
-							.ORAMU(					ORAMU),
-							.ORAML(					ORAML),
-							.ORAMZ(					ORAMZ),
-							.BEDWidth(				BEDWidth),
-							.EnableIV(				EnableIV))
-				dram_init(	.Clock(					Clock),
-							.Reset(					Reset),
-							.DRAMCommandAddress(	DRAMInit_DRAMCommandAddress),
-							.DRAMCommand(			DRAMInit_DRAMCommand),
-							.DRAMCommandValid(		DRAMInit_DRAMCommandValid),
-							.DRAMCommandReady(		DRAMInit_DRAMCommandReady),
-							.DRAMWriteData(			DRAMInit_DRAMWriteData),
-							.DRAMWriteDataValid(	DRAMInit_DRAMWriteDataValid),
-							.DRAMWriteDataReady(	DRAMInit_DRAMWriteDataReady),
-							.Done(					DRAMInitComplete));
-	end endgenerate
-
-	assign	DRAMInitializing =						~DRAMInitComplete;
-
-	//--------------------------------------------------------------------------
 	//	StashTop
 	//--------------------------------------------------------------------------
 
@@ -622,9 +584,9 @@ module PathORAMBackendCore(
 							.ORAMC(					ORAMC),
 							.BEDWidth(				BEDWidth),
 							.Overclock(				Overclock),
+							.EnableAES(				EnableAES),
 							.EnableIV(				EnableIV),
-							.EnableREW(             EnableREW),
-							.ORAMUValid(			ORAMUValid))
+							.EnableREW(             EnableREW))
 				stash_top(	.Clock(					Clock),
 							.Reset(					Reset),
 
@@ -657,23 +619,27 @@ module PathORAMBackendCore(
 
 							.DRAMWriteData(			Stash_DRAMWriteData),
 							.DRAMWriteDataValid(	Stash_DRAMWriteDataValid),
-							.DRAMWriteDataReady(	Stash_DRAMWriteDataReady));
-
+							.DRAMWriteDataReady(	Stash_DRAMWriteDataReady),
+							
+							.JTAG_StashCore(		JTAG_StashCore),
+							.JTAG_Stash(			JTAG_Stash),
+							.JTAG_StashTop(			JTAG_StashTop));
+							
 	//--------------------------------------------------------------------------
 	//	DRAM interface multiplexing
 	//--------------------------------------------------------------------------
 
-	assign	DRAMCommandAddress =					(DRAMInitializing) ? 	DRAMInit_DRAMCommandAddress : 	AddrGen_DRAMCommandAddress;
-	assign	DRAMCommand =							(DRAMInitializing) ? 	DRAMInit_DRAMCommand : 			AddrGen_DRAMCommand;
-	assign	DRAMCommandValid =						(DRAMInitializing) ? 	DRAMInit_DRAMCommandValid : 	AddrGen_DRAMCommandValid;
-	assign	AddrGen_DRAMCommandReady =				DRAMCommandReady &	   ~DRAMInitializing;
-	assign	DRAMInit_DRAMCommandReady =				DRAMCommandReady & 		DRAMInitializing;
+	// Note: this is redundant now that we got rid of DRAMInit
 
-	assign	DRAMWriteData =							(DRAMInitializing) ? 	DRAMInit_DRAMWriteData : 		Stash_DRAMWriteData;
-	assign	DRAMWriteDataValid =					(DRAMInitializing) ? 	DRAMInit_DRAMWriteDataValid : 	Stash_DRAMWriteDataValid;
+	assign	DRAMCommandAddress =					AddrGen_DRAMCommandAddress;
+	assign	DRAMCommand =							AddrGen_DRAMCommand;
+	assign	DRAMCommandValid =						AddrGen_DRAMCommandValid;
+	assign	AddrGen_DRAMCommandReady =				DRAMCommandReady;
 
-	assign	DRAMInit_DRAMWriteDataReady =			DRAMWriteDataReady &	DRAMInitializing;
-	assign	Stash_DRAMWriteDataReady =				DRAMWriteDataReady &	~DRAMInitializing;
+	assign	DRAMWriteData =							Stash_DRAMWriteData;
+	assign	DRAMWriteDataValid =					Stash_DRAMWriteDataValid;
+
+	assign	Stash_DRAMWriteDataReady =				DRAMWriteDataReady;
 
 	//--------------------------------------------------------------------------
 endmodule

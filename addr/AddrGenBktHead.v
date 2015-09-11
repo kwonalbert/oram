@@ -16,10 +16,15 @@ module AddrGenBktHead
 	STIdx, BktIdxInST  // output for debugging
 );
 
-	parameter ORAML = 10, DDRROWWidth = 1024, BktSize_DRWords = 8;
+	`include "PathORAM.vh"
+	`include "DDR3SDRAMLocal.vh"
+	`include "BucketLocal.vh"
+
 	localparam ORAMLogL = `log2(ORAML) + 1;
-	`include "SubTreeLocal.vh"
-		
+
+	localparam LogSTSize = L_st;    // subtree size (in buckets), it could be (1 << numST) - 1; this is optimal for Z=3 
+	localparam LogSTSizeBottom = (ORAML+1) % L_st;            // short trees' size (in buckets) at the bottom
+
 	input Clock, Reset, Start, Enable;
 	input [ORAML-1:0] leaf;                     // the input leaf label
 	output reg [ORAMLogL-1:0]  currentLevel; 
@@ -28,7 +33,7 @@ module AddrGenBktHead
 	output [ORAML:0] STIdx, BktIdxInST;  // tmp output for debugging
   
 	
-`ifndef ASIC	
+`ifdef FPGA	
 	initial begin	// don't delete, REWAES needs this to get rid of Reset
 		currentLevel = ORAML+1;
 	end
@@ -43,10 +48,11 @@ module AddrGenBktHead
 
 	// control logic for STGen and BktGen
 	reg [ORAMLogL-1:0] currentLvlinST;
-	assign switchST = currentLvlinST >= L_st - 1;
+	assign switchST = currentLvlinST >= L_st - 32'd1;
+
 	always@(posedge Clock) begin
 		if (Reset) begin
-			currentLevel <= ORAML+1;
+			currentLevel <= ORAML + 32'd1;
 		end
 		else if (Start) begin
 			currentLevel <= 0;
@@ -61,8 +67,9 @@ module AddrGenBktHead
 	end
   
 	// adjust for the (possibly) shorter subtrees at the bottom 
+	localparam L_Padded = numST * L_st;
 	wire shortTreeAtBottom;
-	assign shortTreeAtBottom = (numST * L_st != ORAML+1) && currentLevel >= (numST-1) * L_st;
+	assign shortTreeAtBottom = L_Padded != ORAML + 32'd1 && currentLevel + L_st >= L_Padded;
 	// short tree exists, iff ORAML+1 != multiple of numST * L_st 
 
 	assign BktIdx = BktIdxInST + 
