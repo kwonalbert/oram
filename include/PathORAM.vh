@@ -5,8 +5,8 @@ localparam				PINIT =					-1;
 	
 	//--------------------------------------------------------------------------
 	//	Per-ORAM instance parameters
-	// 		This option is for a design with multiple ORAMs with different parameters.
-	//		In that case, pass parameters from outside TinyORAMCore 
+	// 		This option is for a design with multiple ORAMs with different 
+	//		parameters.  In that case, pass parameters from outside TinyORAMCore 
 	//--------------------------------------------------------------------------
 
 	parameter				ORAMB =					PINIT, 
@@ -30,15 +30,6 @@ localparam				PINIT =					-1;
 
 `else
 
-/* TODO: set the parameters like this for the scripted tests
-	parameter				ORAMB =					512,
-							ORAMU =					32,
-							ORAML =					`ifdef ORAML 	`ORAML 		`else 10  	`endif,
-							ORAMZ =					`ifdef ORAMZ 	`ORAMZ 		`else 5 	`endif,
-							FEDWidth =				`ifdef FEDWidth `FEDWidth 	`else 64	`endif,
-							BEDWidth =              `ifdef BEDWidth `BEDWidth   `else 64   `endif;
-*/
-
 	parameter				ORAMB =					512, 	// block size in bits
 							ORAMU =					32, 	// program addr (at byte-addressable block granularity) width
 							ORAMZ =					4, 		// data block slots per bucket
@@ -59,10 +50,10 @@ localparam				PINIT =					-1;
 	parameter				Overclock = 			1; 		// Pipeline various operations inside the stash (needed for 200 Mhz operation)
 						
 	parameter				EnableAES =				0, 		// Should ORAM include encryption?  (All secure designs should pick 1; 0 is easier to debug)
-							EnableREW =				0, 		// Backend mode: 0 - path ORAM with background eviction; 1 - REWORAM with background eviction
-							EnableIV =          	1; 		// Integrity verification
+							EnableREW =				0, 		// Backend mode: 0 - path ORAM with background eviction; 1 - REW ORAM with background eviction
+							EnableIV =          	1; 		// Enable integrity verification via PosMap MAC?
 							
-	parameter				DelayedWB = 			1'b0;	// No reason for delayed WB any more
+	parameter				DelayedWB = 			1'b0;	// @Deprecated.  No reason for delayed WB any more
 	
 `endif
 
