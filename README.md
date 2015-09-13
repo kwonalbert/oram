@@ -70,15 +70,53 @@ frontend -> integrity verifier -> backend control logic/stash -> encryption
 units, and vice versa.
 			
 --------------------------------------------------------------------------------
-Where do I set ORAM parameters?
+FAQ: Where do I set ORAM parameters?
 --------------------------------------------------------------------------------
 	
 All parameters (block size, Z, Path vs. RAW ORAM, etc) are set in 
 ./include/PathORAM.vh.  If you instantiate TinyORAMCore.v	and don't override 
 parameters, they will come from that include file.
+
+--------------------------------------------------------------------------------
+FAQ: How do I set the macros?
+--------------------------------------------------------------------------------
+	
+Here is the guide:	
+	
+set MACROSAFE=1 	always.
+
+set SIMULATION=1 	for any simulation.  Most FPGA tools are smart enough to 
+					ignore this for synthesis so you can probably just leave it 
+					set always.
+					
+SIMULATION_VIVADO=1 for any Xilinx Vivado simulation.  That tool has some quirks 
+					(we devved on version 2013.4).
+					
+set FPGA_MEMORY=1 	if you are devving on an FPGA.  Leave unset if you are 
+					targeting an ASIC (see ../ASIC/* for relevant code).
+
+--------------------------------------------------------------------------------
+FAQ: Where are there examples of TinyORAMCore instantiated?
+--------------------------------------------------------------------------------
+	
+TinyORAMASICWrap.v: 
+	A test harness for Tiny ORAM that we developed for the ASIC tapeout.  This 
+	bundles the ORAM core and a traffic generator (acts as a user that sends 
+	requests).  Set Mode_DummyGen = 0. 	
+	
+frontend/test/testUORAM.v: 
+	Instantiates TinyORAMASICWrap in a simulator-level testbench.  This is a 
+	good bare-bones way to test the code.  Includes a simulator-level DRAM 
+	controller.
+		
+../boards/vc707/TinyORAMTop_vc707.v:
+	A valid top file for the VC707/KC705 Xilinx FPGA boards.  Instantiates Tiny 
+	ORAM, traffic generator, and a way to collect results and send requests from 
+	a user machine (e.g., laptop) over UART.  This module is a little out of 
+	date but should be easy to get working again.
 		
 --------------------------------------------------------------------------------
-Ready/Valid handshake: how do modules communicate?
+FAQ: Ready/Valid handshake: how do modules communicate?
 --------------------------------------------------------------------------------
 		
 Most modules use a "latency insensitive" (basically a FIFO) interface to 
@@ -99,9 +137,15 @@ Semantically, Module A will bring OutValid high when it has data to send (same
 as FIFO.Empty == false).  Module B will bring InReady high when it can accept 
 data (i.e., FIFO.full == false).  When both signals are high in the same cycle, 
 data is transferred on the bus.
+
+--------------------------------------------------------------------------------
+FAQ: What are the JTAG_ signals in these modules?
+--------------------------------------------------------------------------------	
+	
+We added these for debugging during our ASIC tapeout.  They can be left undriven.
 	
 --------------------------------------------------------------------------------
-What do you use for crypto?
+FAQ: What do you use for crypto?
 --------------------------------------------------------------------------------	
 	
 Tiny ORAM uses AES for encryption and SHA3 for integrity verification.  We use 
