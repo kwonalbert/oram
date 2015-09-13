@@ -14,11 +14,13 @@ modular design.  At a system level, the major components connect like this:
 	DRAM controller
 
 The 'Memory interface' is:
-  (op, address, data) where op = read/write.
+  (op, address, data) where op = read/write;
+  uses the ready/valid handshake for passing data (see below)
 
 The 'Position-based ORAM interface' is:
   (op, address, data, currentPos, NewPos)
-  where op = read/write/some additional low-level commands.
+  where op = read/write/some additional low-level commands;
+  uses the ready/valid handshake for passing data (see below)
 
 The frontend manages the block-to-position mapping, and translates a frontend
 access into one or multiple backend accesses.  A Unified frontend is currently
@@ -50,14 +52,14 @@ Code structure
 Tiny ORAM								(TinyORAMCore.v, top module)
 	Frontend 							(choose between Basic or Unified)
 		Basic frontend					(under development)
-		Unified frontend				(frontend/UORAMController.v)
+		-or- Unified frontend			(frontend/UORAMController.v)
 			PosMap+PLB					(frontend/PosMapPLB.v)
 			DataPath					(frontend/UORAMDataPath.v)
 		Integrity Verifier				(integrity/IntegrityVerifier.v)
 	Backend								(choose between Path ORAM or RAW ORAM)
 		Path ORAM Backend 				(backend/PathORAMBackend.v)
 			Symmetric Encryption		(encryption/basic/*.v)
-		RAW ORAM Backend 				(backend/PathORAMBackend.v)
+		-or- RAW ORAM Backend 			(backend/PathORAMBackend.v)
 			Coherence Controller		(backend/CoherenceController.v)
 			Integrity Verification		(integrity/*.v)
 			Symmetric Encryption		(encryption/rew/*.v)
@@ -75,7 +77,7 @@ All parameters (block size, Z, Path vs. RAW ORAM, etc) are set in
 parameters, they will come from that include file.
 		
 --------------------------------------------------------------------------------
-What interface do these modules use?
+Ready/Valid handshake: how do modules communicate?
 --------------------------------------------------------------------------------
 		
 Most modules use a "latency insensitive" (basically a FIFO) interface to 
@@ -96,6 +98,21 @@ Semantically, Module A will bring OutValid high when it has data to send (same
 as FIFO.Empty == false).  Module B will bring InReady high when it can accept 
 data (i.e., FIFO.full == false).  When both signals are high in the same cycle, 
 data is transferred on the bus.
+	
+--------------------------------------------------------------------------------
+What do you use for crypto?
+--------------------------------------------------------------------------------	
+	
+Tiny ORAM uses AES for encryption and SHA3 for integrity verification.  We use 
+Rudolf Usselmann's non-pipelined AES for generating pseudo-random numbers and 
+Homer Hsing's tinyaes core for the main ORAM path encrypt/decrypt operations.  
+We also use Homer's SHA3 core for integrity verification.  We got these projects 
+from Open Cores.
+
+We have extended these modules slightly for our purposes and therefore include 
+the code.
+
+Thanks to Rudolf and Homer for the awesome work!!
 	
 --------------------------------------------------------------------------------
 Conventions
