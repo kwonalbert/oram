@@ -50,24 +50,25 @@ Code structure
 --------------------------------------------------------------------------------
 
 Tiny ORAM								(TinyORAMCore.v, top module)
-	Frontend 							(choose between Basic or Unified)
+	Frontend 							(choose between Basic or Unified, frontend/Frontend.v)
 		Basic frontend					(under development)
 		-or- Unified frontend			(frontend/UORAMController.v)
 			PosMap+PLB					(frontend/PosMapPLB.v)
 			DataPath					(frontend/UORAMDataPath.v)
 		Integrity Verifier				(integrity/IntegrityVerifier.v)
-	Backend								(choose between Path ORAM or RAW ORAM)
-		Path ORAM Backend 				(backend/PathORAMBackend.v)
-			Symmetric Encryption		(encryption/basic/*.v)
-		-or- RAW ORAM Backend 			(backend/PathORAMBackend.v)
-			Coherence Controller		(backend/CoherenceController.v)
-			Integrity Verification		(integrity/*.v)
-			Symmetric Encryption		(encryption/rew/*.v)
-		Shared across both backend designs
+	Backend								(choose between Path ORAM or RAW ORAM, backend/PathORAMBackend.v)
+		Control logic					(backend/PathORAMBackendCore.v)
 			Address Generator			(addr/*.v)
 			Stash						(stash/*.v)
-	User-level parameters				(local/PathORAM.vh)
+		Path ORAM Backend 				(backend/AESPathORAM.v)
+			Symmetric Encryption		(encryption/basic/*.v)
+		-or- RAW ORAM Backend 			(backend/AESREWORAM.v)
+			Symmetric Encryption		(encryption/rew/*.v)
 
+Data flows (roughly) top to bottom.  That is, a user request passes through 
+frontend -> integrity verifier -> backend control logic/stash -> encryption 
+units, and vice versa.
+			
 --------------------------------------------------------------------------------
 Where do I set ORAM parameters?
 --------------------------------------------------------------------------------
