@@ -87,7 +87,7 @@ module testUORAM;
                             .DRAMWriteDataValid(	DDR3SDRAM_WriteValid),
                             .DRAMWriteDataReady(	DDR3SDRAM_WriteReady),
 							
-							.Mode_TrafficGen(		1'b1), // For the chip, just run traffic gen for a long time
+							.Mode_TrafficGen(		TGEN), // For the chip, just run traffic gen for a long time
 							.Mode_DummyGen(			1'b0),
 							
 							.ctap_oram_req_val(		ctap_oram_req_val),
@@ -168,7 +168,7 @@ module testUORAM;
 			$finish;
 		end
 		
-		ctap_oram_req_val = (CycleCountSinceReset >= 20 && CycleCountSinceReset % 2 == 0);
+		ctap_oram_req_val = 0; // no need to check jtag bits.  (CycleCountSinceReset >= 20 && CycleCountSinceReset % 2 == 0);
 	
 		if (CycleCountSinceReset >= 21 && ^oram_ctap_res_data === 1'bx) begin
 			$display("JTAG signal is X");
@@ -227,7 +227,7 @@ module testUORAM;
 	`ifdef GATE_SIM_POWER
 	localparam  				NN = 15; // so slow ... run for a few accesses only
 	`else
-	localparam  				NN = 200;
+	localparam  				NN = 25;
 	`endif
 	
 	localparam					nn = 10;
@@ -427,6 +427,7 @@ module testUORAM;
             end
             else begin
                 $display("TESTUORAM PASSED!");
+				$finish;
 				TGEN = 1'b1;
             end
         end
